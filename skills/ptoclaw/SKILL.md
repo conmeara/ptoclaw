@@ -16,7 +16,7 @@ Use this skill when the user asks to manage PTO from the local PTOClaw plugin, i
 - Before first-time onboarding, inspect the user's calendar for existing PTO/day-off signals so setup starts from observed data instead of only asking questions. Look for explicit PTO/OOO/vacation/off-work titles and obvious trip names the user calls out.
 - During onboarding, ask how holidays should be sourced: a user-provided holiday list, an existing holiday/calendar feed, or an employer schedule lookup. If the user provides an employer, try to find an official current-year schedule; if only unofficial sources are available, say so and mark imported holidays as unverified.
 - Prefer human-readable output for direct user answers. Use `--json` when another tool or automation will consume the result.
-- For chat-friendly month-by-month balance answers, use `ptoclaw summary months [--year YYYY] [--as-of YYYY-MM-DD]`. Prefer its human output for direct messages because it is compact and avoids markdown tables; use `--json` for automation.
+- For chat-friendly month-by-month balance answers, use `ptoclaw summary months [--year YYYY] [--as-of YYYY-MM-DD]`. Prefer its human output for direct messages because it uses fixed five-slot emoji bars, keeps bars left-aligned in proportional chat fonts, and avoids markdown tables; use `--json` for automation.
 - Treat calendar sync as an external side effect. `calendar sync` is dry-run only in this release and must be run with `--dry-run`.
 
 ## Common Commands

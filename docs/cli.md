@@ -54,7 +54,7 @@ Planned `vacation`, `sick`, and `personal` plans consume PTO when `status = plan
 
 ## Message Summaries
 
-`ptoclaw summary months` prints a compact, message-native year view that can be pasted directly into Telegram, SMS, or plain text. It shows one row per month with a simple level indicator, starting and ending balance in days, accrued PTO, planned PTO consumption, and non-PTO days such as holidays.
+`ptoclaw summary months` prints a compact, message-native forecast that can be pasted directly into Telegram, SMS, or plain text. It uses fixed five-slot emoji bars at the start of each row so visual levels line up in proportional chat fonts, then shows ending balance, accrued PTO, planned PTO consumption, and non-PTO days such as holidays.
 
 Example:
 
@@ -68,4 +68,4 @@ Human output intentionally avoids markdown tables. Use it for direct chat replie
 ptoclaw --json summary months --year 2026 --as-of 2026-01-01
 ```
 
-The JSON payload includes `months[]` entries with `month`, `start`, `end`, starting and ending balances in hours and days, accrued hours, planned PTO hours and days, `nonPtoDays`, `holidayCount`, `level`, and `indicator`. The command only reads PTOClaw's SQLite database; it does not inspect calendars or create events.
+The JSON payload includes top-level `currentBalanceDays`, `yearEndBalanceDays`, `lowestBalanceMonth`, and `nextPtoPlan`, plus `months[]` entries with `month`, `start`, `end`, starting and ending balances in hours and days, accrued hours, planned PTO hours and days, `nonPtoDays`, `holidayCount`, `level`, `indicator`, `bar`, `filledUnits`, and `totalUnits`. The command only reads PTOClaw's SQLite database; it does not inspect calendars or create events.

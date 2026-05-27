@@ -78,7 +78,7 @@ ptoclaw plan remove 1 --force
 ptoclaw db stats
 ```
 
-For chat replies, `ptoclaw summary months` produces a compact month-by-month PTO balance view with emoji level indicators and no markdown table. Use `--json` for automation that needs the same monthly snapshots as structured data.
+For chat replies, `ptoclaw summary months` produces a compact month-by-month PTO forecast with fixed five-slot emoji bars and no markdown table. Use `--json` for automation that needs the same monthly snapshots and summary metadata as structured data.
 
 ## Safety
 

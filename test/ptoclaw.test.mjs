@@ -465,12 +465,20 @@ test("monthly summary emits chat-friendly text and structured JSON", async () =>
   ]);
 
   const human = await run(["--db", db, "summary", "months", "--year", "2026", "--as-of", "2026-01-01"]);
-  assert.match(human.stdout, /PTO by month 2026 \(as of 2026-01-01\)/);
-  assert.match(human.stdout, /Mar .+ 11d -> 7d \(\+1d, -5d\)/);
-  assert.match(human.stdout, /Nov .+ 14d -> 15d \(\+1d, -0d\) 3 non-PTOd/);
+  assert.match(human.stdout, /PTO forecast 2026/);
+  assert.match(human.stdout, /Now: 10\.0d · year end: 16\.0d/);
+  assert.match(human.stdout, /Lowest: Mar, 7\.0d/);
+  assert.match(human.stdout, /🟨🟨⬜⬜⬜ Mar 7\.0d · PTO 5d · \+1d/);
+  assert.match(human.stdout, /🟩🟩🟩🟩🟩 Nov 15\.0d · off 3d · \+1d/);
+  assert.match(human.stdout, /Next PTO: Spring break, Mar 2-6/);
+  assert.match(human.stdout, /Booked PTO: 5d · accrual left: \+11d/);
 
   const summary = await json(["--db", db, "summary", "months", "--year", "2026", "--as-of", "2026-01-01"]);
   assert.equal(summary.year, 2026);
+  assert.equal(summary.currentBalanceDays, 10);
+  assert.equal(summary.yearEndBalanceDays, 16);
+  assert.equal(summary.lowestBalanceMonth.month, "March");
+  assert.equal(summary.nextPtoPlan.title, "Spring break");
   assert.equal(summary.months.length, 12);
   assert.equal(summary.months[2].month, "March");
   assert.equal(summary.months[2].startingBalanceHours, 88);
@@ -478,6 +486,9 @@ test("monthly summary emits chat-friendly text and structured JSON", async () =>
   assert.equal(summary.months[2].accruedHours, 8);
   assert.equal(summary.months[2].plannedPtoHours, 40);
   assert.equal(summary.months[2].plannedPtoDays, 5);
+  assert.equal(summary.months[2].bar, "🟨🟨⬜⬜⬜");
+  assert.equal(summary.months[2].filledUnits, 2);
+  assert.equal(summary.months[2].totalUnits, 5);
   assert.equal(summary.months[10].nonPtoDays, 3);
   assert.equal(summary.months[10].holidayCount, 1);
   assert.match(summary.months[10].indicator, /^\p{Emoji}/u);

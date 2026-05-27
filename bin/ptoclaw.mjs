@@ -839,14 +839,41 @@ function nonPtoDaysInRange(db, startIso, endIso) {
 
 function levelForDays(days) {
   const safeDays = Number.isFinite(days) ? days : 0;
-  const filled = Math.max(0, Math.min(5, Math.ceil(safeDays / 3)));
-  const bar = `${"#".repeat(filled)}${".".repeat(5 - filled)}`;
-  if (safeDays <= 0) return { level: "empty", indicator: `🔴 [${bar}]` };
-  if (safeDays < 2) return { level: "low", indicator: `🔴 [${bar}]` };
-  if (safeDays < 5) return { level: "light", indicator: `🟠 [${bar}]` };
-  if (safeDays < 10) return { level: "steady", indicator: `🟡 [${bar}]` };
-  if (safeDays < 15) return { level: "strong", indicator: `🟢 [${bar}]` };
-  return { level: "full", indicator: `🟢 [${bar}]` };
+  let filled = Math.max(0, Math.min(5, Math.round(safeDays / 3)));
+  if (safeDays > 0 && filled === 0) filled = 1;
+  const empty = 5 - filled;
+  let level = "full";
+  let block = "🟩";
+  if (safeDays <= 0) {
+    level = "empty";
+    block = "🟥";
+  } else if (safeDays < 2) {
+    level = "low";
+    block = "🟥";
+  } else if (safeDays < 5) {
+    level = "light";
+    block = "🟧";
+  } else if (safeDays < 10) {
+    level = "steady";
+    block = "🟨";
+  } else if (safeDays < 15) {
+    level = "strong";
+    block = "🟩";
+  }
+  const bar = `${block.repeat(filled)}${"⬜".repeat(empty)}`;
+  return { level, indicator: bar, bar, filledUnits: filled, totalUnits: 5 };
+}
+
+function nextPtoPlan(db, asOfIso) {
+  return db.prepare(`
+    SELECT *
+    FROM ptoclaw_plans
+    WHERE status = 'planned'
+      AND type IN ('vacation', 'sick', 'personal')
+      AND end_date >= ?
+    ORDER BY start_date, id
+    LIMIT 1
+  `).get(asOfIso) || null;
 }
 
 function monthlySummary(db, options = {}) {
@@ -884,6 +911,9 @@ function monthlySummary(db, options = {}) {
       holidayCount: nonPto.holidayCount,
       level: level.level,
       indicator: level.indicator,
+      bar: level.bar,
+      filledUnits: level.filledUnits,
+      totalUnits: level.totalUnits,
     });
   }
 
@@ -895,6 +925,15 @@ function monthlySummary(db, options = {}) {
     return sum;
   }, { accruedHours: 0, plannedPtoHours: 0, nonPtoDays: 0, holidayCount: 0 });
 
+  const displayMonths = months.filter((month) => month.end >= asOf);
+  const currentProjection = projectionThrough(db, asOf, settings, asOf);
+  const yearEndMonth = months[11];
+  const lowestMonth = displayMonths.reduce((lowest, month) => {
+    if (!lowest) return month;
+    return month.endingBalanceDays < lowest.endingBalanceDays ? month : lowest;
+  }, null);
+  const nextPto = nextPtoPlan(db, asOf);
+
   return {
     year,
     asOf,
@@ -903,6 +942,25 @@ function monthlySummary(db, options = {}) {
       accrualHours: settings.accrual_hours,
       hoursPerDay: settings.hours_per_day,
     },
+    currentBalanceHours: currentProjection.balanceHours,
+    currentBalanceDays: currentProjection.balanceDays,
+    yearEndBalanceHours: yearEndMonth.endingBalanceHours,
+    yearEndBalanceDays: yearEndMonth.endingBalanceDays,
+    lowestBalanceMonth: lowestMonth ? {
+      month: lowestMonth.month,
+      monthNumber: lowestMonth.monthNumber,
+      endingBalanceHours: lowestMonth.endingBalanceHours,
+      endingBalanceDays: lowestMonth.endingBalanceDays,
+      level: lowestMonth.level,
+    } : null,
+    nextPtoPlan: nextPto ? {
+      id: nextPto.id,
+      title: nextPto.title,
+      startDate: nextPto.start_date,
+      endDate: nextPto.end_date,
+      plannedPtoHours: nextPto.total_hours,
+      plannedPtoDays: settings.hours_per_day ? nextPto.total_hours / settings.hours_per_day : null,
+    } : null,
     months,
     totals: {
       ...totals,
@@ -1051,20 +1109,44 @@ function formatHuman(value) {
 }
 
 function formatMonthlySummary(value) {
+  const displayMonths = value.months.filter((month) => month.end >= value.asOf);
   const lines = [
-    `PTO by month ${value.year} (as of ${value.asOf})`,
+    `PTO forecast ${value.year}`,
+    `Now: ${fmtBalanceDays(value.currentBalanceDays)} · year end: ${fmtBalanceDays(value.yearEndBalanceDays)}`,
   ];
-  for (const month of value.months) {
-    const parts = [
-      `${month.month.slice(0, 3)} ${month.indicator}`,
-      `${fmt(month.startingBalanceDays)}d -> ${fmt(month.endingBalanceDays)}d`,
-      `(+${fmt(month.accruedHours / value.settings.hoursPerDay)}d, -${fmt(month.plannedPtoDays)}d)`,
-    ];
-    if (month.nonPtoDays > 0) parts.push(`${fmt(month.nonPtoDays)} non-PTOd`);
-    lines.push(parts.join(" "));
+  if (value.lowestBalanceMonth) {
+    lines.push(`Lowest: ${value.lowestBalanceMonth.month.slice(0, 3)}, ${fmtBalanceDays(value.lowestBalanceMonth.endingBalanceDays)}`);
   }
-  lines.push(`Totals: +${fmt(value.totals.accruedDays)}d accrued, -${fmt(value.totals.plannedPtoDays)}d planned PTO, ${fmt(value.totals.nonPtoDays)} non-PTOd`);
+  lines.push("");
+  for (const month of displayMonths) {
+    const details = [];
+    if (month.plannedPtoDays > 0) details.push(`PTO ${fmtDayCount(month.plannedPtoDays)}`);
+    if (month.nonPtoDays > 0) details.push(`off ${fmtDayCount(month.nonPtoDays)}`);
+    const accruedDays = month.accruedHours / value.settings.hoursPerDay;
+    if (accruedDays > 0) details.push(`+${fmtDayCount(accruedDays)}`);
+    const suffix = details.length > 0 ? ` · ${details.join(" · ")}` : "";
+    lines.push(`${month.indicator} ${month.month.slice(0, 3)} ${fmtBalanceDays(month.endingBalanceDays)}${suffix}`);
+  }
+  lines.push("");
+  if (value.nextPtoPlan) {
+    lines.push(`Next PTO: ${value.nextPtoPlan.title}, ${formatDateRange(value.nextPtoPlan.startDate, value.nextPtoPlan.endDate)}`);
+  }
+  lines.push(`Booked PTO: ${fmtDayCount(value.totals.plannedPtoDays)} · accrual left: +${fmtDayCount(value.totals.accruedDays)}`);
   return lines.join("\n");
+}
+
+function formatDateRange(startIso, endIso) {
+  const start = parseDate(startIso, "start date");
+  const end = parseDate(endIso, "end date");
+  const month = MONTH_NAMES[start.getUTCMonth()].slice(0, 3);
+  const startDay = start.getUTCDate();
+  const endDay = end.getUTCDate();
+  if (startIso === endIso) return `${month} ${startDay}`;
+  if (start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()) {
+    return `${month} ${startDay}-${endDay}`;
+  }
+  const endMonth = MONTH_NAMES[end.getUTCMonth()].slice(0, 3);
+  return `${month} ${startDay}-${endMonth} ${endDay}`;
 }
 
 function formatPlanLine(plan) {
@@ -1073,6 +1155,16 @@ function formatPlanLine(plan) {
 
 function fmtHours(value) {
   return `${fmt(value)}h`;
+}
+
+function fmtBalanceDays(value) {
+  if (value === null || value === undefined) return "n/a";
+  return `${Number(value).toFixed(1)}d`;
+}
+
+function fmtDayCount(value) {
+  if (value === null || value === undefined) return "n/a";
+  return `${Number(value).toFixed(1).replace(/\.0$/, "")}d`;
 }
 
 function fmt(value) {
