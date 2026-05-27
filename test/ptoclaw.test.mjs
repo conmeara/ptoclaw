@@ -33,16 +33,25 @@ async function tempDb() {
   return path.join(dir, "ptoclaw.sqlite");
 }
 
+async function tempHome() {
+  const dir = await fs.mkdtemp(path.join(await tempRoot(), "ptoclaw-home-"));
+  return {
+    HOME: dir,
+    XDG_CONFIG_HOME: path.join(dir, ".config"),
+  };
+}
+
 async function run(args, options = {}) {
+  const env = { ...process.env, PTOCLAW_DB: "", ...options.env };
   return execFileAsync(process.execPath, [cli, ...args], {
     cwd: path.resolve("."),
-    env: { ...process.env, PTOCLAW_DB: "" },
     ...options,
+    env,
   });
 }
 
-async function json(args) {
-  const { stdout } = await run(["--json", ...args]);
+async function json(args, options = {}) {
+  const { stdout } = await run(["--json", ...args], options);
   return JSON.parse(stdout);
 }
 
@@ -117,6 +126,47 @@ test("onboard writes PTO settings and calendar preferences", async () => {
   assert.equal(status.currentBalanceDays, 10);
 });
 
+test("onboard with --db saves the db path for later commands", async () => {
+  const env = await tempHome();
+  const db = path.join(env.HOME, "personal.sqlite");
+  const config = path.join(env.XDG_CONFIG_HOME, "ptoclaw", "config.json");
+  const onboard = await json([
+    "--db",
+    db,
+    "onboard",
+    "--balance-days",
+    "10",
+    "--accrual-days",
+    "1",
+    "--accrual-cadence",
+    "monthly",
+    "--hours-per-day",
+    "8",
+    "--as-of",
+    "2026-01-15",
+    "--pto-calendar",
+    "Conor's Schedule",
+    "--pto-event-pattern",
+    "PTO|OOO|Vacation",
+    "--holiday-calendar",
+    "US Holidays",
+    "--holiday-event-pattern",
+    "Holiday|Office closed",
+    "--no-input",
+  ], { env });
+
+  assert.equal(onboard.dryRun, false);
+  assert.equal(onboard.dbPath, db);
+  assert.equal(onboard.configPath, config);
+  const savedConfig = JSON.parse(await fs.readFile(config, "utf8"));
+  assert.equal(savedConfig.dbPath, db);
+
+  const status = await json(["status", "--as-of", "2026-01-15"], { env });
+  assert.equal(status.dbPath, db);
+  assert.equal(status.settings.balance_hours, 80);
+  assert.equal(status.currentBalanceDays, 10);
+});
+
 test("onboard dry-run previews without changing settings", async () => {
   const db = await seededDb();
   const preview = await json([
@@ -149,6 +199,39 @@ test("onboard dry-run previews without changing settings", async () => {
 
   const status = await json(["--db", db, "status", "--as-of", "2026-01-01"]);
   assert.equal(status.settings.balance_hours, 80);
+});
+
+test("onboard dry-run with --db creates neither database nor config", async () => {
+  const env = await tempHome();
+  const db = path.join(env.HOME, "dry-run.sqlite");
+  const config = path.join(env.XDG_CONFIG_HOME, "ptoclaw", "config.json");
+  const preview = await json([
+    "--db",
+    db,
+    "onboard",
+    "--balance-hours",
+    "120",
+    "--accrual-hours",
+    "10",
+    "--accrual-cadence",
+    "semimonthly",
+    "--hours-per-day",
+    "8",
+    "--as-of",
+    "2026-02-01",
+    "--pto-calendar",
+    "PTO",
+    "--pto-event-pattern",
+    "PTO",
+    "--no-holiday-calendar",
+    "--dry-run",
+    "--no-input",
+  ], { env });
+
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.dbPath, db);
+  await assert.rejects(fs.access(db), /ENOENT/);
+  await assert.rejects(fs.access(config), /ENOENT/);
 });
 
 test("onboard dry-run does not initialize an empty database", async () => {

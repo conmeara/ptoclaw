@@ -6,6 +6,8 @@ ptoclaw [--db PATH] [--json] [--no-input] [--verbose] <command>
 
 Global options may appear before the command. `plan list` and `calendar sync` also accept command-local `--json` for convenience.
 
+`--db PATH` selects the SQLite database for that invocation. Without it, PTOClaw checks `PTOCLAW_DB`, then the saved onboarding config at `~/.config/ptoclaw/config.json` or `$XDG_CONFIG_HOME/ptoclaw/config.json`, then the local default `~/.local/share/ptoclaw/ptoclaw.sqlite`.
+
 ## Commands
 
 ```bash
@@ -34,9 +36,12 @@ ptoclaw db stats
 
 When stdin is a TTY, missing values are prompted for. For agent or script usage, pass all required values and `--no-input`. Use `--no-holiday-calendar` when holidays are not tracked on a separate calendar; no holiday pattern is required in that mode.
 
+If no `--db`, `PTOCLAW_DB`, or saved config exists, interactive onboarding prompts for the SQLite DB path before opening or creating it. Non-interactive onboarding can persist a DB choice by passing global `--db PATH`; dry runs never create a database or config file.
+
 Example:
 
 ```bash
+ptoclaw --db /path/to/personal-data.sqlite onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ```
 

@@ -11,7 +11,8 @@ Use this skill when the user asks to manage PTO from the local PTOClaw plugin, i
 
 - Use the plugin CLI through `ptoclaw` when it is installed, or `node bin/ptoclaw.mjs` from this repo during development.
 - Keep SQLite as the source of truth. Do not hardcode private paths, account names, calendars, emails, or personal data.
-- Use `PTOCLAW_DB` or `--db PATH` when the user wants an external database. Otherwise, use the CLI default user-local path.
+- Use `--db PATH` during onboarding when the user wants an external or shared SQLite database. Successful onboarding saves that path in the PTOClaw config for future commands.
+- Database resolution is explicit `--db`, then `PTOCLAW_DB`, then saved config `dbPath`, then the CLI default user-local path.
 - Prefer human-readable output for direct user answers. Use `--json` when another tool or automation will consume the result.
 - Treat calendar sync as an external side effect. `calendar sync` is dry-run only in this release and must be run with `--dry-run`.
 
@@ -32,7 +33,7 @@ ptoclaw onboard
 For non-interactive agent setup, provide all values explicitly:
 
 ```bash
-ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
+ptoclaw --db /path/to/personal-data.sqlite onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ```
 
 Use `--no-holiday-calendar` instead of `--holiday-calendar` when holidays are not tracked on a separate calendar. In that mode, do not require `--holiday-event-pattern`.

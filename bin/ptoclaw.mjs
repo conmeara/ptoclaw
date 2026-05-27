@@ -17,6 +17,7 @@ process.emitWarning = originalEmitWarning;
 const VERSION = "0.1.0";
 const SCHEMA_VERSION = "2";
 const DEFAULT_DB = "~/.local/share/ptoclaw/ptoclaw.sqlite";
+const CONFIG_FILE_NAME = "config.json";
 const VALID_TYPES = new Set(["vacation", "sick", "holiday", "personal"]);
 const VALID_STATUSES = new Set(["planned", "tentative"]);
 const VALID_CADENCES = new Set(["monthly", "semimonthly", "biweekly", "weekly"]);
@@ -49,7 +50,7 @@ Commands:
   db stats
 
 Global options:
-  --db PATH       SQLite database path. Defaults to PTOCLAW_DB or ${DEFAULT_DB}
+  --db PATH       SQLite database path. Defaults to PTOCLAW_DB, saved config, or ${DEFAULT_DB}
   --json          Emit machine-readable JSON
   --no-input      Disable interactive prompts; accepted for agent workflows
   --verbose       Include extra diagnostics where available
@@ -60,7 +61,8 @@ Global options:
 
 function parseArgv(argv) {
   const globals = {
-    db: process.env.PTOCLAW_DB || DEFAULT_DB,
+    db: null,
+    dbSource: null,
     json: false,
     noInput: false,
     verbose: false,
@@ -73,6 +75,7 @@ function parseArgv(argv) {
     const arg = argv[i];
     if (arg === "--db") {
       globals.db = takeValue(argv, ++i, "--db");
+      globals.dbSource = "flag";
     } else if (arg === "--json") {
       globals.json = true;
     } else if (arg === "--no-input") {
@@ -89,6 +92,80 @@ function parseArgv(argv) {
   }
 
   return { globals, rest };
+}
+
+function resolveGlobalDb(globals) {
+  if (globals.db) return globals;
+  if (process.env.PTOCLAW_DB) {
+    globals.db = process.env.PTOCLAW_DB;
+    globals.dbSource = "env";
+    return globals;
+  }
+  const config = readConfig();
+  if (config.dbPath) {
+    globals.db = config.dbPath;
+    globals.dbSource = "config";
+    return globals;
+  }
+  globals.db = DEFAULT_DB;
+  globals.dbSource = "default";
+  return globals;
+}
+
+function configPath() {
+  const base = process.env.XDG_CONFIG_HOME
+    ? path.resolve(process.env.XDG_CONFIG_HOME)
+    : path.join(os.homedir(), ".config");
+  return path.join(base, "ptoclaw", CONFIG_FILE_NAME);
+}
+
+function readConfig() {
+  const file = configPath();
+  if (!fs.existsSync(file)) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new CliError(`Could not read PTOClaw config at ${file}: ${error.message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CliError(`PTOClaw config at ${file} must be a JSON object`);
+  }
+  if (parsed.dbPath !== undefined && typeof parsed.dbPath !== "string") {
+    throw new CliError(`PTOClaw config at ${file} must use a string dbPath`);
+  }
+  return parsed;
+}
+
+function writeConfig(config) {
+  const file = configPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  return file;
+}
+
+function saveDbPathConfig(dbPath) {
+  const config = readConfig();
+  config.dbPath = expandPath(dbPath);
+  return writeConfig(config);
+}
+
+async function maybePromptForOnboardingDb(command, globals) {
+  const promptable = command === "onboard"
+    && globals.dbSource === "default"
+    && !globals.noInput
+    && process.stdin.isTTY;
+  if (!promptable) return globals;
+
+  const asker = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await asker.question(`SQLite DB path [${DEFAULT_DB}]: `);
+    globals.db = answer.trim() === "" ? DEFAULT_DB : answer.trim();
+    globals.dbSource = "prompt";
+    return globals;
+  } finally {
+    asker.close();
+  }
 }
 
 function parseOptions(args) {
@@ -828,6 +905,8 @@ async function main() {
   const commandArgs = usesSubcommand ? rest.slice(2) : rest.slice(1);
   const { positionals, options } = parseOptions(commandArgs);
   if (options.json) globals.json = true;
+  resolveGlobalDb(globals);
+  await maybePromptForOnboardingDb(command, globals);
   const resolvedDbPath = expandPath(globals.db);
   const shouldAvoidDbCreate = command === "onboard" && options.dryRun && !fs.existsSync(resolvedDbPath);
   const { db, dbPath } = shouldAvoidDbCreate
@@ -843,6 +922,9 @@ async function main() {
 
     if (command === "onboard") {
       const result = await onboard(db, dbPath, options, globals);
+      if (!options.dryRun && ["flag", "prompt"].includes(globals.dbSource)) {
+        result.configPath = saveDbPathConfig(dbPath);
+      }
       print({ kind: "onboard", ok: true, ...result }, globals);
       return;
     }

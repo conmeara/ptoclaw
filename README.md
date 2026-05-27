@@ -35,7 +35,16 @@ By default, PTOClaw uses:
 ~/.local/share/ptoclaw/ptoclaw.sqlite
 ```
 
-Override the database with either:
+Database resolution order is:
+
+1. explicit `--db PATH`
+2. `PTOCLAW_DB=/path/to/ptoclaw.sqlite`
+3. saved onboarding config at `~/.config/ptoclaw/config.json` or `$XDG_CONFIG_HOME/ptoclaw/config.json`
+4. `~/.local/share/ptoclaw/ptoclaw.sqlite`
+
+During interactive onboarding, PTOClaw asks where to store the SQLite database before it creates one. In non-interactive setup, pass `--db PATH` to `ptoclaw onboard`; after onboarding succeeds, PTOClaw saves that path for future commands.
+
+Override the saved/default database for a single command with either:
 
 ```bash
 PTOCLAW_DB=/path/to/ptoclaw.sqlite ptoclaw status
@@ -58,6 +67,7 @@ ptoclaw calendar sync --dry-run --json
 Useful commands:
 
 ```bash
+ptoclaw --db /path/to/personal-data.sqlite onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ptoclaw plan list --upcoming
 ptoclaw plan add --start 2026-11-25 --end 2026-11-27 --type holiday --status planned --title "Office closed" --dry-run
