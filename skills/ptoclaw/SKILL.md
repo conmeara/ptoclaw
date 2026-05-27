@@ -23,6 +23,20 @@ Initialize storage:
 ptoclaw init
 ```
 
+Run first-time onboarding:
+
+```bash
+ptoclaw onboard
+```
+
+For non-interactive agent setup, provide all values explicitly:
+
+```bash
+ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
+```
+
+Use `--no-holiday-calendar` instead of `--holiday-calendar` when holidays are not tracked on a separate calendar. In that mode, do not require `--holiday-event-pattern`.
+
 Show current status:
 
 ```bash

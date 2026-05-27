@@ -4,7 +4,7 @@ PTOClaw uses namespaced tables so it can share a SQLite database with other loca
 
 ## `ptoclaw_meta`
 
-Key/value metadata. `schema_version` is currently `1`.
+Key/value metadata. `schema_version` is currently `2`.
 
 ## `ptoclaw_settings`
 
@@ -23,3 +23,14 @@ Stores planned PTO windows, title/notes, computed weekday count, total PTO hours
 ## `ptoclaw_calendar_sync`
 
 Tracks the stable external ID and future sync state for each plan. Calendar writes are not implemented yet; this table is prepared for a future adapter.
+
+## `ptoclaw_calendar_preferences`
+
+Single-row calendar setup captured during onboarding:
+
+- `pto_calendar_name`
+- `pto_event_pattern`
+- `holiday_calendar_name`
+- `holiday_event_pattern`
+
+These values describe how the user already tracks days off and holidays on their calendar. Calendar writes and imports are still dry-run/planned behavior.

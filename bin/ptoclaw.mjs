@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline/promises";
 
 const originalEmitWarning = process.emitWarning;
 process.emitWarning = (warning, ...args) => {
@@ -14,7 +15,7 @@ const { DatabaseSync } = await import("node:sqlite");
 process.emitWarning = originalEmitWarning;
 
 const VERSION = "0.1.0";
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 const DEFAULT_DB = "~/.local/share/ptoclaw/ptoclaw.sqlite";
 const VALID_TYPES = new Set(["vacation", "sick", "holiday", "personal"]);
 const VALID_STATUSES = new Set(["planned", "tentative"]);
@@ -37,6 +38,7 @@ Usage:
 
 Commands:
   init
+  onboard [--balance-hours N|--balance-days N] [--accrual-hours N|--accrual-days N] [--accrual-cadence monthly|semimonthly|biweekly|weekly] [--hours-per-day N] [--as-of YYYY-MM-DD] [--pto-calendar TEXT] [--pto-event-pattern TEXT] [--holiday-calendar TEXT|--no-holiday-calendar] [--holiday-event-pattern TEXT] [--dry-run]
   status [--as-of YYYY-MM-DD]
   settings set --balance-hours N --accrual-hours N --accrual-cadence monthly|semimonthly|biweekly|weekly --hours-per-day N [--as-of YYYY-MM-DD]
   plan add --start YYYY-MM-DD --end YYYY-MM-DD --type vacation|sick|holiday|personal --status planned|tentative --title TEXT [--notes TEXT] [--dry-run]
@@ -103,7 +105,7 @@ function parseOptions(args) {
       continue;
     }
     const name = arg.slice(2);
-    if (["dry-run", "force", "upcoming"].includes(name)) {
+    if (["dry-run", "force", "upcoming", "no-holiday-calendar"].includes(name)) {
       options[toCamel(name)] = true;
     } else {
       options[toCamel(name)] = takeValue(args, ++i, arg);
@@ -186,6 +188,15 @@ CREATE TABLE IF NOT EXISTS ptoclaw_calendar_sync (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS ptoclaw_calendar_preferences (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  pto_calendar_name TEXT,
+  pto_event_pattern TEXT NOT NULL DEFAULT 'PTO|OOO|Vacation',
+  holiday_calendar_name TEXT,
+  holiday_event_pattern TEXT NOT NULL DEFAULT 'Holiday|Office closed',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS ptoclaw_plans_dates_idx ON ptoclaw_plans(start_date, end_date);
 CREATE INDEX IF NOT EXISTS ptoclaw_plans_status_type_idx ON ptoclaw_plans(status, type);
 `;
@@ -199,12 +210,15 @@ function initSchema(db, asOf = todayIso()) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(SCHEMA_VERSION);
   db.prepare("INSERT OR IGNORE INTO ptoclaw_settings (id, as_of_date) VALUES (1, ?)").run(asOf);
+  db.prepare("INSERT OR IGNORE INTO ptoclaw_calendar_preferences (id) VALUES (1)").run();
 }
 
 function hasSchema(db) {
-  const row = db
-    .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'ptoclaw_settings'")
-    .get();
+  return hasTable(db, "ptoclaw_settings");
+}
+
+function hasTable(db, name) {
+  const row = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
   return Boolean(row?.ok);
 }
 
@@ -212,10 +226,40 @@ function requireSchema(db) {
   if (!hasSchema(db)) {
     throw new CliError("Database is not initialized. Run `ptoclaw init` first.");
   }
+  initSchema(db);
 }
 
 function getSettings(db) {
+  if (!hasTable(db, "ptoclaw_settings")) return defaultSettings();
   return db.prepare("SELECT * FROM ptoclaw_settings WHERE id = 1").get();
+}
+
+function getCalendarPreferences(db) {
+  if (!hasTable(db, "ptoclaw_calendar_preferences")) return defaultCalendarPreferences();
+  return db.prepare("SELECT * FROM ptoclaw_calendar_preferences WHERE id = 1").get();
+}
+
+function defaultSettings(asOf = todayIso()) {
+  return {
+    id: 1,
+    balance_hours: 0,
+    accrual_hours: 0,
+    accrual_cadence: "monthly",
+    hours_per_day: 8,
+    as_of_date: asOf,
+    updated_at: null,
+  };
+}
+
+function defaultCalendarPreferences() {
+  return {
+    id: 1,
+    pto_calendar_name: null,
+    pto_event_pattern: "PTO|OOO|Vacation",
+    holiday_calendar_name: null,
+    holiday_event_pattern: "Holiday|Office closed",
+    updated_at: null,
+  };
 }
 
 function setSettings(db, options) {
@@ -248,6 +292,175 @@ function setSettings(db, options) {
     settings.asOfDate,
   );
   return getSettings(db);
+}
+
+function setCalendarPreferences(db, options) {
+  db.prepare(`
+    UPDATE ptoclaw_calendar_preferences
+    SET pto_calendar_name = ?,
+        pto_event_pattern = ?,
+        holiday_calendar_name = ?,
+        holiday_event_pattern = ?,
+        updated_at = datetime('now')
+    WHERE id = 1
+  `).run(
+    blankToNull(options.ptoCalendarName),
+    options.ptoEventPattern,
+    blankToNull(options.holidayCalendarName),
+    options.holidayEventPattern,
+  );
+  return getCalendarPreferences(db);
+}
+
+function blankToNull(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function deriveOnboardingDraft(options) {
+  if (options.balanceHours !== undefined && options.balanceDays !== undefined) {
+    throw new CliError("Use either --balance-hours or --balance-days, not both");
+  }
+  if (options.accrualHours !== undefined && options.accrualDays !== undefined) {
+    throw new CliError("Use either --accrual-hours or --accrual-days, not both");
+  }
+  const hoursPerDay = parseNumber(options.hoursPerDay, "--hours-per-day");
+  if (hoursPerDay <= 0) throw new CliError("--hours-per-day must be greater than 0");
+  const balanceHours = options.balanceHours !== undefined
+    ? parseNumber(options.balanceHours, "--balance-hours")
+    : parseNumber(options.balanceDays, "--balance-days") * hoursPerDay;
+  const accrualHours = options.accrualHours !== undefined
+    ? parseNumber(options.accrualHours, "--accrual-hours")
+    : parseNumber(options.accrualDays, "--accrual-days") * hoursPerDay;
+  if (balanceHours < 0) throw new CliError("--balance-hours/--balance-days must be zero or greater");
+  if (accrualHours < 0) throw new CliError("--accrual-hours/--accrual-days must be zero or greater");
+  if (!VALID_CADENCES.has(options.accrualCadence)) {
+    throw new CliError("--accrual-cadence must be monthly, semimonthly, biweekly, or weekly");
+  }
+  return {
+    settings: {
+      balanceHours,
+      accrualHours,
+      accrualCadence: options.accrualCadence,
+      hoursPerDay,
+      asOf: isoDate(parseDate(options.asOf, "--as-of")),
+    },
+    calendarPreferences: {
+      ptoCalendarName: blankToNull(options.ptoCalendar),
+      ptoEventPattern: options.ptoEventPattern,
+      holidayCalendarName: options.noHolidayCalendar ? null : blankToNull(options.holidayCalendar),
+      holidayEventPattern: options.holidayEventPattern,
+    },
+  };
+}
+
+async function buildOnboardingOptions(db, options, globals) {
+  const existingSettings = db ? getSettings(db) : defaultSettings();
+  const existingPrefs = db ? getCalendarPreferences(db) : defaultCalendarPreferences();
+  const promptable = !globals.noInput && process.stdin.isTTY;
+  if (!promptable) validateNonInteractiveOnboardingOptions(options);
+  const asker = promptable
+    ? readline.createInterface({ input: process.stdin, output: process.stderr })
+    : null;
+  try {
+    const withDefault = async (key, label, fallback) => {
+      if (options[key] !== undefined) return options[key];
+      if (!promptable) {
+        throw new CliError(`onboard requires --${fromCamel(key)} when prompts are unavailable`);
+      }
+      const answer = await asker.question(`${label}${fallback !== undefined && fallback !== null && fallback !== "" ? ` [${fallback}]` : ""}: `);
+      return answer.trim() === "" ? String(fallback ?? "") : answer.trim();
+    };
+
+    const hoursPerDay = await withDefault("hoursPerDay", "How many PTO hours make one work day?", existingSettings.hours_per_day || 8);
+    let balanceHours = options.balanceHours;
+    if (balanceHours === undefined && options.balanceDays === undefined) {
+      balanceHours = await withDefault("balanceHours", "How many PTO hours do you currently have left?", existingSettings.balance_hours ?? 0);
+    }
+    let accrualHours = options.accrualHours;
+    if (accrualHours === undefined && options.accrualDays === undefined) {
+      accrualHours = await withDefault("accrualHours", "How many PTO hours do you accrue per period?", existingSettings.accrual_hours ?? 0);
+    }
+
+    return {
+      ...options,
+      hoursPerDay,
+      balanceHours,
+      accrualHours,
+      accrualCadence: await withDefault("accrualCadence", "Accrual cadence (monthly, semimonthly, biweekly, weekly)", existingSettings.accrual_cadence || "monthly"),
+      asOf: await withDefault("asOf", "Current balance as-of date (YYYY-MM-DD)", options.asOf || todayIso()),
+      ptoCalendar: await withDefault("ptoCalendar", "Calendar name for PTO/day-off events", existingPrefs.pto_calendar_name || "Calendar"),
+      ptoEventPattern: await withDefault("ptoEventPattern", "Text pattern for PTO/day-off events", existingPrefs.pto_event_pattern || "PTO|OOO|Vacation"),
+      holidayCalendar: options.noHolidayCalendar ? "" : await withDefault("holidayCalendar", "Calendar name for holidays/office closures (blank if none)", existingPrefs.holiday_calendar_name || ""),
+      holidayEventPattern: options.noHolidayCalendar
+        ? (options.holidayEventPattern ?? existingPrefs.holiday_event_pattern ?? "Holiday|Office closed")
+        : await withDefault("holidayEventPattern", "Text pattern for holidays/office closures", existingPrefs.holiday_event_pattern || "Holiday|Office closed"),
+    };
+  } finally {
+    asker?.close();
+  }
+}
+
+function validateNonInteractiveOnboardingOptions(options) {
+  const missing = [];
+  if (options.balanceHours !== undefined && options.balanceDays !== undefined) {
+    throw new CliError("Use either --balance-hours or --balance-days, not both");
+  }
+  if (options.accrualHours !== undefined && options.accrualDays !== undefined) {
+    throw new CliError("Use either --accrual-hours or --accrual-days, not both");
+  }
+  if (options.noHolidayCalendar && options.holidayCalendar !== undefined) {
+    throw new CliError("Use either --holiday-calendar or --no-holiday-calendar, not both");
+  }
+  if (options.balanceHours === undefined && options.balanceDays === undefined) missing.push("--balance-hours or --balance-days");
+  if (options.accrualHours === undefined && options.accrualDays === undefined) missing.push("--accrual-hours or --accrual-days");
+  for (const key of ["hoursPerDay", "accrualCadence", "asOf", "ptoCalendar", "ptoEventPattern"]) {
+    if (options[key] === undefined) missing.push(`--${fromCamel(key)}`);
+  }
+  if (!options.noHolidayCalendar && options.holidayCalendar === undefined) {
+    missing.push("--holiday-calendar or --no-holiday-calendar");
+  }
+  if (!options.noHolidayCalendar && options.holidayEventPattern === undefined) missing.push("--holiday-event-pattern");
+  if (missing.length > 0) {
+    throw new CliError(`onboard requires ${missing.join(", ")} when prompts are unavailable`);
+  }
+}
+
+async function onboard(db, dbPath, options, globals) {
+  if (!options.dryRun) initSchema(db, options.asOf || todayIso());
+  const completeOptions = await buildOnboardingOptions(db, options, globals);
+  const draft = deriveOnboardingDraft(completeOptions);
+  if (options.dryRun) {
+    return {
+      dbPath,
+      dryRun: true,
+      settings: settingsDraftToRow(draft.settings),
+      calendarPreferences: preferencesDraftToRow(draft.calendarPreferences),
+    };
+  }
+  const settings = setSettings(db, draft.settings);
+  const calendarPreferences = setCalendarPreferences(db, draft.calendarPreferences);
+  return { dbPath, dryRun: false, settings, calendarPreferences };
+}
+
+function settingsDraftToRow(settings) {
+  return {
+    balance_hours: settings.balanceHours,
+    accrual_hours: settings.accrualHours,
+    accrual_cadence: settings.accrualCadence,
+    hours_per_day: settings.hoursPerDay,
+    as_of_date: settings.asOf,
+  };
+}
+
+function preferencesDraftToRow(preferences) {
+  return {
+    pto_calendar_name: preferences.ptoCalendarName,
+    pto_event_pattern: preferences.ptoEventPattern,
+    holiday_calendar_name: preferences.holidayCalendarName,
+    holiday_event_pattern: preferences.holidayEventPattern,
+  };
 }
 
 function parseNumber(value, label) {
@@ -524,6 +737,19 @@ function formatHuman(value) {
         `Accrual: ${fmtHours(value.settings.accrual_hours)} ${value.settings.accrual_cadence}`,
         `Hours/day: ${fmt(value.settings.hours_per_day)}`,
       ].join("\n");
+    case "onboard":
+      return [
+        value.dryRun ? "Onboarding dry run" : "PTOClaw onboarding complete",
+        `DB: ${value.dbPath}`,
+        `Balance: ${fmtHours(value.settings.balance_hours)} (${fmt(value.settings.balance_hours / value.settings.hours_per_day)} days)`,
+        `Accrual: ${fmtHours(value.settings.accrual_hours)} ${value.settings.accrual_cadence}`,
+        `Hours/day: ${fmt(value.settings.hours_per_day)}`,
+        `As of: ${value.settings.as_of_date}`,
+        `PTO calendar: ${value.calendarPreferences.pto_calendar_name || "not set"}`,
+        `PTO pattern: ${value.calendarPreferences.pto_event_pattern}`,
+        `Holiday calendar: ${value.calendarPreferences.holiday_calendar_name || "not set"}`,
+        `Holiday pattern: ${value.calendarPreferences.holiday_event_pattern}`,
+      ].join("\n");
     case "status":
       return [
         `DB: ${value.dbPath}`,
@@ -602,12 +828,22 @@ async function main() {
   const commandArgs = usesSubcommand ? rest.slice(2) : rest.slice(1);
   const { positionals, options } = parseOptions(commandArgs);
   if (options.json) globals.json = true;
-  const { db, dbPath } = openDb(globals.db);
+  const resolvedDbPath = expandPath(globals.db);
+  const shouldAvoidDbCreate = command === "onboard" && options.dryRun && !fs.existsSync(resolvedDbPath);
+  const { db, dbPath } = shouldAvoidDbCreate
+    ? { db: null, dbPath: resolvedDbPath }
+    : openDb(globals.db);
 
   try {
     if (command === "init") {
       initSchema(db);
       print({ kind: "init", ok: true, dbPath }, globals);
+      return;
+    }
+
+    if (command === "onboard") {
+      const result = await onboard(db, dbPath, options, globals);
+      print({ kind: "onboard", ok: true, ...result }, globals);
       return;
     }
 
@@ -645,7 +881,7 @@ async function main() {
       throw new CliError(`Unknown command: ${rest.join(" ")}`);
     }
   } finally {
-    db.close();
+    db?.close();
   }
 }
 

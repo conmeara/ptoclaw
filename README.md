@@ -6,7 +6,7 @@ PTOClaw is a small local-first PTO planner for OpenClaw users. It ships as a sta
 
 ```bash
 npm install -g github:conmeara/ptoclaw
-ptoclaw init
+ptoclaw onboard
 ```
 
 From a checkout:
@@ -47,7 +47,7 @@ All tables are prefixed with `ptoclaw_`, so the schema is safe to colocate in an
 ## Quick Start
 
 ```bash
-ptoclaw init
+ptoclaw onboard
 ptoclaw settings set --balance-hours 80 --accrual-hours 8 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01
 ptoclaw status
 ptoclaw plan add --start 2026-07-06 --end 2026-07-10 --type vacation --status planned --title "Summer break"
@@ -58,6 +58,7 @@ ptoclaw calendar sync --dry-run --json
 Useful commands:
 
 ```bash
+ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ptoclaw plan list --upcoming
 ptoclaw plan add --start 2026-11-25 --end 2026-11-27 --type holiday --status planned --title "Office closed" --dry-run
 ptoclaw plan remove 1 --dry-run
@@ -82,6 +83,8 @@ The plugin metadata lives in:
 - `skills/ptoclaw/SKILL.md`
 
 The skill tells OpenClaw agents to use the CLI as the primary interface, keep SQLite as the source of truth, avoid private defaults, prefer JSON for automation, and treat calendar sync as dry-run only.
+
+For first-run setup, use `ptoclaw onboard`. It collects the user's current PTO balance, accrual rate/cadence, hours per PTO day, and the calendar names/patterns they use for days off and holidays. In non-interactive agent workflows, pass the same values as flags with `--no-input`; use `--no-holiday-calendar` when holidays are not tracked on a separate calendar, with no holiday pattern required.
 
 Privacy and usage terms are intentionally short because PTOClaw is local-first:
 

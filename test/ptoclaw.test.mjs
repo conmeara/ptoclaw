@@ -71,10 +71,153 @@ async function seededDb() {
 test("prints help and version", async () => {
   const help = await run(["--help"]);
   assert.match(help.stdout, /Usage:/);
+  assert.match(help.stdout, /onboard/);
   assert.match(help.stdout, /calendar sync --dry-run/);
 
   const version = await run(["--version"]);
   assert.equal(version.stdout.trim(), "0.1.0");
+});
+
+test("onboard writes PTO settings and calendar preferences", async () => {
+  const db = await tempDb();
+  const onboard = await json([
+    "--db",
+    db,
+    "onboard",
+    "--balance-days",
+    "10",
+    "--accrual-days",
+    "1",
+    "--accrual-cadence",
+    "monthly",
+    "--hours-per-day",
+    "8",
+    "--as-of",
+    "2026-01-15",
+    "--pto-calendar",
+    "Conor's Schedule",
+    "--pto-event-pattern",
+    "PTO|OOO|Vacation",
+    "--holiday-calendar",
+    "US Holidays",
+    "--holiday-event-pattern",
+    "Holiday|Office closed",
+    "--no-input",
+  ]);
+  assert.equal(onboard.dryRun, false);
+  assert.equal(onboard.settings.balance_hours, 80);
+  assert.equal(onboard.settings.accrual_hours, 8);
+  assert.equal(onboard.settings.accrual_cadence, "monthly");
+  assert.equal(onboard.settings.as_of_date, "2026-01-15");
+  assert.equal(onboard.calendarPreferences.pto_calendar_name, "Conor's Schedule");
+  assert.equal(onboard.calendarPreferences.holiday_calendar_name, "US Holidays");
+
+  const status = await json(["--db", db, "status", "--as-of", "2026-01-15"]);
+  assert.equal(status.settings.balance_hours, 80);
+  assert.equal(status.currentBalanceDays, 10);
+});
+
+test("onboard dry-run previews without changing settings", async () => {
+  const db = await seededDb();
+  const preview = await json([
+    "--db",
+    db,
+    "onboard",
+    "--balance-hours",
+    "120",
+    "--accrual-hours",
+    "10",
+    "--accrual-cadence",
+    "semimonthly",
+    "--hours-per-day",
+    "8",
+    "--as-of",
+    "2026-02-01",
+    "--pto-calendar",
+    "PTO",
+    "--pto-event-pattern",
+    "PTO",
+    "--holiday-calendar",
+    "Holidays",
+    "--holiday-event-pattern",
+    "Holiday",
+    "--dry-run",
+    "--no-input",
+  ]);
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.settings.balance_hours, 120);
+
+  const status = await json(["--db", db, "status", "--as-of", "2026-01-01"]);
+  assert.equal(status.settings.balance_hours, 80);
+});
+
+test("onboard dry-run does not initialize an empty database", async () => {
+  const db = await tempDb();
+  const preview = await json([
+    "--db",
+    db,
+    "onboard",
+    "--balance-hours",
+    "120",
+    "--accrual-hours",
+    "10",
+    "--accrual-cadence",
+    "semimonthly",
+    "--hours-per-day",
+    "8",
+    "--as-of",
+    "2026-02-01",
+    "--pto-calendar",
+    "PTO",
+    "--pto-event-pattern",
+    "PTO",
+    "--no-holiday-calendar",
+    "--dry-run",
+    "--no-input",
+  ]);
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.calendarPreferences.holiday_calendar_name, null);
+
+  await assert.rejects(fs.access(db), /ENOENT/);
+  await assert.rejects(run(["--db", db, "status"]), /Database is not initialized/);
+});
+
+test("onboard non-interactive mode requires explicit setup values", async () => {
+  const db = await tempDb();
+  await assert.rejects(
+    run(["--db", db, "onboard", "--no-input"]),
+    /onboard requires --balance-hours or --balance-days/,
+  );
+});
+
+test("onboard rejects ambiguous hour and day inputs", async () => {
+  const db = await tempDb();
+  await assert.rejects(
+    run([
+      "--db",
+      db,
+      "onboard",
+      "--balance-hours",
+      "80",
+      "--balance-days",
+      "10",
+      "--accrual-hours",
+      "8",
+      "--accrual-cadence",
+      "monthly",
+      "--hours-per-day",
+      "8",
+      "--as-of",
+      "2026-01-01",
+      "--pto-calendar",
+      "Calendar",
+      "--pto-event-pattern",
+      "PTO",
+      "--no-holiday-calendar",
+      "--no-input",
+    ]),
+    /Use either --balance-hours or --balance-days/,
+  );
 });
 
 test("dry-run plan add does not write", async () => {
