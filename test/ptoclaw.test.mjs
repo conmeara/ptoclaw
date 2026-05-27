@@ -42,7 +42,8 @@ async function tempHome() {
 }
 
 async function run(args, options = {}) {
-  const env = { ...process.env, PTOCLAW_DB: "", ...options.env };
+  const isolatedHome = options.env?.HOME || options.env?.XDG_CONFIG_HOME ? {} : await tempHome();
+  const env = { ...process.env, PTOCLAW_DB: "", ...isolatedHome, ...options.env };
   return execFileAsync(process.execPath, [cli, ...args], {
     cwd: path.resolve("."),
     ...options,
