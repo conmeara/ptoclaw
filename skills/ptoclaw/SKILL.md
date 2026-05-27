@@ -1,3 +1,8 @@
+---
+name: ptoclaw
+description: Manage PTO from the local PTOClaw plugin and CLI, including PTO balance, accrual settings, planned time off, forecasts, and calendar sync dry-runs.
+---
+
 # PTOClaw
 
 Use this skill when the user asks to manage PTO from the local PTOClaw plugin, inspect PTO balance, add or remove planned time off, forecast PTO, or preview calendar sync.
