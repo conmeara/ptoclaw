@@ -169,6 +169,38 @@ test("forecast math honors --as-of", async () => {
   assert.equal(forecast.endingBalanceHours, 64);
 });
 
+test("forecast only counts planned PTO inside the forecast window", async () => {
+  const db = await seededDb();
+  await run([
+    "--db",
+    db,
+    "plan",
+    "add",
+    "--start",
+    "2026-03-02",
+    "--end",
+    "2026-03-06",
+    "--type",
+    "vacation",
+    "--status",
+    "planned",
+    "--title",
+    "Spring break",
+  ]);
+
+  const forecast = await json([
+    "--db",
+    db,
+    "forecast",
+    "--through",
+    "2026-03-03",
+    "--as-of",
+    "2026-03-01",
+  ]);
+  assert.equal(forecast.plannedHours, 16);
+  assert.equal(forecast.endingBalanceHours, 64);
+});
+
 test("status and plan list produce JSON", async () => {
   const db = await seededDb();
   const status = await json(["--db", db, "status", "--as-of", "2026-01-01"]);

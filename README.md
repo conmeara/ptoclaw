@@ -83,6 +83,11 @@ The plugin metadata lives in:
 
 The skill tells OpenClaw agents to use the CLI as the primary interface, keep SQLite as the source of truth, avoid private defaults, prefer JSON for automation, and treat calendar sync as dry-run only.
 
+Privacy and usage terms are intentionally short because PTOClaw is local-first:
+
+- [Privacy Policy](docs/privacy.md)
+- [Terms](docs/terms.md)
+
 ## Current Limits
 
 - Weekends are excluded from PTO hour counts; custom holidays and work schedules are not modeled yet.

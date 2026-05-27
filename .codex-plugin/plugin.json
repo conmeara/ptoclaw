@@ -29,8 +29,8 @@
       "Calendar"
     ],
     "websiteURL": "https://github.com/conmeara/ptoclaw",
-    "privacyPolicyURL": "https://github.com/conmeara/ptoclaw",
-    "termsOfServiceURL": "https://github.com/conmeara/ptoclaw",
+    "privacyPolicyURL": "https://github.com/conmeara/ptoclaw/blob/main/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/conmeara/ptoclaw/blob/main/docs/terms.md",
     "defaultPrompt": [
       "Show my PTO status.",
       "Add a planned vacation to PTOClaw.",

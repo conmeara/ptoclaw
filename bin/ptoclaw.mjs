@@ -411,15 +411,19 @@ function nextSemiMonthlyDate(date) {
 }
 
 function plannedHoursThrough(db, throughIso, asOfIso) {
-  const row = db.prepare(`
-    SELECT COALESCE(SUM(total_hours), 0) AS hours
+  const rows = db.prepare(`
+    SELECT start_date, end_date, hours_per_day
     FROM ptoclaw_plans
     WHERE status = 'planned'
       AND type IN ('vacation', 'sick', 'personal')
       AND start_date <= ?
       AND end_date >= ?
-  `).get(throughIso, asOfIso);
-  return Number(row?.hours || 0);
+  `).all(throughIso, asOfIso);
+  return rows.reduce((total, plan) => {
+    const overlapStart = plan.start_date > asOfIso ? plan.start_date : asOfIso;
+    const overlapEnd = plan.end_date < throughIso ? plan.end_date : throughIso;
+    return total + countWeekdays(parseDate(overlapStart, "plan start"), parseDate(overlapEnd, "plan end")) * plan.hours_per_day;
+  }, 0);
 }
 
 function forecast(db, throughValue, options = {}) {
