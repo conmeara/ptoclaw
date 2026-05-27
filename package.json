@@ -1,0 +1,42 @@
+{
+  "name": "ptoclaw",
+  "version": "0.1.0",
+  "description": "Local-first PTO planning CLI and OpenClaw plugin backed by SQLite.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/conmeara/ptoclaw#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/conmeara/ptoclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/conmeara/ptoclaw/issues"
+  },
+  "bin": {
+    "ptoclaw": "./bin/ptoclaw.mjs"
+  },
+  "files": [
+    "bin/",
+    "docs/",
+    "skills/",
+    ".codex-plugin/",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "openclaw",
+    "pto",
+    "vacation",
+    "sqlite",
+    "calendar"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/ptoclaw.test.mjs",
+    "smoke": "node test/smoke.mjs",
+    "check": "npm test && npm run smoke"
+  }
+}

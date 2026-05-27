@@ -1,0 +1,657 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = (warning, ...args) => {
+  const message = typeof warning === "string" ? warning : warning?.message;
+  if (message?.includes("SQLite is an experimental feature")) return;
+  return originalEmitWarning.call(process, warning, ...args);
+};
+const { DatabaseSync } = await import("node:sqlite");
+process.emitWarning = originalEmitWarning;
+
+const VERSION = "0.1.0";
+const SCHEMA_VERSION = "1";
+const DEFAULT_DB = "~/.local/share/ptoclaw/ptoclaw.sqlite";
+const VALID_TYPES = new Set(["vacation", "sick", "holiday", "personal"]);
+const VALID_STATUSES = new Set(["planned", "tentative"]);
+const VALID_CADENCES = new Set(["monthly", "semimonthly", "biweekly", "weekly"]);
+const CONSUMING_TYPES = new Set(["vacation", "sick", "personal"]);
+const DAY_MS = 86_400_000;
+
+class CliError extends Error {
+  constructor(message, code = 1) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function usage() {
+  return `ptoclaw ${VERSION}
+
+Usage:
+  ptoclaw [--db PATH] [--json] [--no-input] [--verbose] <command>
+
+Commands:
+  init
+  status [--as-of YYYY-MM-DD]
+  settings set --balance-hours N --accrual-hours N --accrual-cadence monthly|semimonthly|biweekly|weekly --hours-per-day N [--as-of YYYY-MM-DD]
+  plan add --start YYYY-MM-DD --end YYYY-MM-DD --type vacation|sick|holiday|personal --status planned|tentative --title TEXT [--notes TEXT] [--dry-run]
+  plan list [--upcoming] [--json]
+  plan remove <id> [--force|--dry-run]
+  forecast --through YYYY-MM-DD [--as-of YYYY-MM-DD]
+  calendar sync --dry-run [--json]
+  db stats
+
+Global options:
+  --db PATH       SQLite database path. Defaults to PTOCLAW_DB or ${DEFAULT_DB}
+  --json          Emit machine-readable JSON
+  --no-input      Disable interactive prompts; accepted for agent workflows
+  --verbose       Include extra diagnostics where available
+  -h, --help      Show help
+  -v, --version   Show version
+`;
+}
+
+function parseArgv(argv) {
+  const globals = {
+    db: process.env.PTOCLAW_DB || DEFAULT_DB,
+    json: false,
+    noInput: false,
+    verbose: false,
+    help: false,
+    version: false,
+  };
+  const rest = [];
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--db") {
+      globals.db = takeValue(argv, ++i, "--db");
+    } else if (arg === "--json") {
+      globals.json = true;
+    } else if (arg === "--no-input") {
+      globals.noInput = true;
+    } else if (arg === "--verbose") {
+      globals.verbose = true;
+    } else if (arg === "-h" || arg === "--help") {
+      globals.help = true;
+    } else if (arg === "-v" || arg === "--version") {
+      globals.version = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  return { globals, rest };
+}
+
+function parseOptions(args) {
+  const positionals = [];
+  const options = {};
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+    if (!arg.startsWith("--")) {
+      positionals.push(arg);
+      continue;
+    }
+    const name = arg.slice(2);
+    if (["dry-run", "force", "upcoming"].includes(name)) {
+      options[toCamel(name)] = true;
+    } else {
+      options[toCamel(name)] = takeValue(args, ++i, arg);
+    }
+  }
+  return { positionals, options };
+}
+
+function takeValue(args, index, optionName) {
+  const value = args[index];
+  if (!value || value.startsWith("--")) {
+    throw new CliError(`${optionName} requires a value`);
+  }
+  return value;
+}
+
+function toCamel(value) {
+  return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function fromCamel(value) {
+  return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
+
+function expandPath(value) {
+  if (!value) return expandPath(DEFAULT_DB);
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return path.resolve(value);
+}
+
+function openDb(dbPath) {
+  const resolved = expandPath(dbPath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const db = new DatabaseSync(resolved);
+  db.exec("PRAGMA foreign_keys = ON");
+  return { db, dbPath: resolved };
+}
+
+function schemaSql() {
+  return `
+CREATE TABLE IF NOT EXISTS ptoclaw_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ptoclaw_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  balance_hours REAL NOT NULL DEFAULT 0,
+  accrual_hours REAL NOT NULL DEFAULT 0,
+  accrual_cadence TEXT NOT NULL DEFAULT 'monthly',
+  hours_per_day REAL NOT NULL DEFAULT 8,
+  as_of_date TEXT NOT NULL DEFAULT (date('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ptoclaw_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  title TEXT NOT NULL,
+  notes TEXT,
+  hours_per_day REAL NOT NULL,
+  workday_count INTEGER NOT NULL,
+  total_hours REAL NOT NULL,
+  calendar_external_id TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ptoclaw_calendar_sync (
+  plan_id INTEGER PRIMARY KEY REFERENCES ptoclaw_plans(id) ON DELETE CASCADE,
+  external_id TEXT NOT NULL UNIQUE,
+  provider TEXT NOT NULL DEFAULT 'apple-calendar',
+  last_action TEXT NOT NULL DEFAULT 'pending',
+  last_synced_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS ptoclaw_plans_dates_idx ON ptoclaw_plans(start_date, end_date);
+CREATE INDEX IF NOT EXISTS ptoclaw_plans_status_type_idx ON ptoclaw_plans(status, type);
+`;
+}
+
+function initSchema(db, asOf = todayIso()) {
+  db.exec(schemaSql());
+  db.prepare(`
+    INSERT INTO ptoclaw_meta (key, value)
+    VALUES ('schema_version', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).run(SCHEMA_VERSION);
+  db.prepare("INSERT OR IGNORE INTO ptoclaw_settings (id, as_of_date) VALUES (1, ?)").run(asOf);
+}
+
+function hasSchema(db) {
+  const row = db
+    .prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'ptoclaw_settings'")
+    .get();
+  return Boolean(row?.ok);
+}
+
+function requireSchema(db) {
+  if (!hasSchema(db)) {
+    throw new CliError("Database is not initialized. Run `ptoclaw init` first.");
+  }
+}
+
+function getSettings(db) {
+  return db.prepare("SELECT * FROM ptoclaw_settings WHERE id = 1").get();
+}
+
+function setSettings(db, options) {
+  const required = ["balanceHours", "accrualHours", "accrualCadence", "hoursPerDay"];
+  for (const key of required) {
+    if (options[key] === undefined) throw new CliError(`settings set requires --${fromCamel(key)}`);
+  }
+  const settings = {
+    balanceHours: parseNumber(options.balanceHours, "--balance-hours"),
+    accrualHours: parseNumber(options.accrualHours, "--accrual-hours"),
+    accrualCadence: options.accrualCadence,
+    hoursPerDay: parseNumber(options.hoursPerDay, "--hours-per-day"),
+    asOfDate: options.asOf ? isoDate(parseDate(options.asOf, "--as-of")) : getSettings(db).as_of_date,
+  };
+  if (!VALID_CADENCES.has(settings.accrualCadence)) {
+    throw new CliError("--accrual-cadence must be monthly, semimonthly, biweekly, or weekly");
+  }
+  if (settings.hoursPerDay <= 0) throw new CliError("--hours-per-day must be greater than 0");
+  if (settings.accrualHours < 0) throw new CliError("--accrual-hours must be zero or greater");
+
+  db.prepare(`
+    UPDATE ptoclaw_settings
+    SET balance_hours = ?, accrual_hours = ?, accrual_cadence = ?, hours_per_day = ?, as_of_date = ?, updated_at = datetime('now')
+    WHERE id = 1
+  `).run(
+    settings.balanceHours,
+    settings.accrualHours,
+    settings.accrualCadence,
+    settings.hoursPerDay,
+    settings.asOfDate,
+  );
+  return getSettings(db);
+}
+
+function parseNumber(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new CliError(`${label} must be a number`);
+  return number;
+}
+
+function parseDate(value, label) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) {
+    throw new CliError(`${label} must use YYYY-MM-DD`);
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    throw new CliError(`${label} is not a valid date`);
+  }
+  return date;
+}
+
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function todayIso() {
+  return isoDate(new Date());
+}
+
+function addDaysIso(value, days) {
+  const date = parseDate(value, "date");
+  date.setUTCDate(date.getUTCDate() + days);
+  return isoDate(date);
+}
+
+function countWeekdays(start, end) {
+  let count = 0;
+  for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
+    const day = date.getUTCDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+function validatePlanOptions(options) {
+  for (const key of ["start", "end", "type", "status", "title"]) {
+    if (!options[key]) throw new CliError(`plan add requires --${fromCamel(key)}`);
+  }
+  const start = parseDate(options.start, "--start");
+  const end = parseDate(options.end, "--end");
+  if (end < start) throw new CliError("--end must be on or after --start");
+  if (!VALID_TYPES.has(options.type)) {
+    throw new CliError("--type must be vacation, sick, holiday, or personal");
+  }
+  if (!VALID_STATUSES.has(options.status)) {
+    throw new CliError("--status must be planned or tentative");
+  }
+  return { start, end };
+}
+
+function buildPlanDraft(settings, options) {
+  const { start, end } = validatePlanOptions(options);
+  const workdayCount = countWeekdays(start, end);
+  const totalHours = CONSUMING_TYPES.has(options.type) ? workdayCount * settings.hours_per_day : 0;
+  return {
+    start_date: isoDate(start),
+    end_date: isoDate(end),
+    type: options.type,
+    status: options.status,
+    title: options.title,
+    notes: options.notes || null,
+    hours_per_day: settings.hours_per_day,
+    workday_count: workdayCount,
+    total_hours: totalHours,
+  };
+}
+
+function insertPlan(db, draft) {
+  const result = db.prepare(`
+    INSERT INTO ptoclaw_plans (
+      start_date, end_date, type, status, title, notes, hours_per_day, workday_count, total_hours
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    draft.start_date,
+    draft.end_date,
+    draft.type,
+    draft.status,
+    draft.title,
+    draft.notes,
+    draft.hours_per_day,
+    draft.workday_count,
+    draft.total_hours,
+  );
+  const id = Number(result.lastInsertRowid);
+  const externalId = calendarExternalId({ id, ...draft });
+  db.prepare("UPDATE ptoclaw_plans SET calendar_external_id = ?, updated_at = datetime('now') WHERE id = ?").run(externalId, id);
+  db.prepare(`
+    INSERT OR REPLACE INTO ptoclaw_calendar_sync (plan_id, external_id, last_action, updated_at)
+    VALUES (?, ?, 'pending', datetime('now'))
+  `).run(id, externalId);
+  return getPlan(db, id);
+}
+
+function calendarExternalId(plan) {
+  return `ptoclaw:${plan.id}:${plan.start_date}:${plan.end_date}`;
+}
+
+function getPlan(db, id) {
+  return db.prepare("SELECT * FROM ptoclaw_plans WHERE id = ?").get(id);
+}
+
+function listPlans(db, options = {}) {
+  if (options.upcoming) {
+    const asOf = options.asOf || todayIso();
+    return db
+      .prepare("SELECT * FROM ptoclaw_plans WHERE end_date >= ? ORDER BY start_date, id")
+      .all(asOf);
+  }
+  return db.prepare("SELECT * FROM ptoclaw_plans ORDER BY start_date, id").all();
+}
+
+function removePlan(db, id, options) {
+  const plan = getPlan(db, id);
+  if (!plan) throw new CliError(`No plan found with id ${id}`);
+  if (!options.force && !options.dryRun) {
+    throw new CliError("Refusing to remove without --force or --dry-run");
+  }
+  if (!options.dryRun) {
+    db.prepare("DELETE FROM ptoclaw_plans WHERE id = ?").run(id);
+  }
+  return plan;
+}
+
+function accrualPeriodsBetween(cadence, asOf, through) {
+  if (through < asOf) return 0;
+  const days = Math.floor((through.getTime() - asOf.getTime()) / DAY_MS);
+  if (cadence === "weekly") return Math.floor(days / 7);
+  if (cadence === "biweekly") return Math.floor(days / 14);
+  if (cadence === "semimonthly") return wholeSemiMonthsUntil(asOf, through);
+  return wholeMonthsUntil(asOf, through);
+}
+
+function wholeMonthsUntil(asOf, through) {
+  const monthDelta = (through.getUTCFullYear() - asOf.getUTCFullYear()) * 12 + (through.getUTCMonth() - asOf.getUTCMonth());
+  if (monthDelta <= 0) return 0;
+  return through.getUTCDate() >= asOf.getUTCDate() ? monthDelta : monthDelta - 1;
+}
+
+function wholeSemiMonthsUntil(asOf, through) {
+  let periods = 0;
+  for (let cursor = nextSemiMonthlyDate(asOf); cursor <= through; cursor = nextSemiMonthlyDate(cursor)) {
+    periods += 1;
+  }
+  return periods;
+}
+
+function nextSemiMonthlyDate(date) {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  if (day < 15) return new Date(Date.UTC(year, month, 15));
+  return new Date(Date.UTC(year, month + 1, 1));
+}
+
+function plannedHoursThrough(db, throughIso, asOfIso) {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(total_hours), 0) AS hours
+    FROM ptoclaw_plans
+    WHERE status = 'planned'
+      AND type IN ('vacation', 'sick', 'personal')
+      AND start_date <= ?
+      AND end_date >= ?
+  `).get(throughIso, asOfIso);
+  return Number(row?.hours || 0);
+}
+
+function forecast(db, throughValue, options = {}) {
+  const through = parseDate(throughValue, "--through");
+  const throughIso = isoDate(through);
+  const settings = getSettings(db);
+  const asOfIso = options.asOf ? isoDate(parseDate(options.asOf, "--as-of")) : settings.as_of_date;
+  const asOf = parseDate(asOfIso, "--as-of");
+  const accrualPeriods = accrualPeriodsBetween(settings.accrual_cadence, asOf, through);
+  const accruedHours = accrualPeriods * settings.accrual_hours;
+  const plannedHours = plannedHoursThrough(db, throughIso, asOfIso);
+  const endingBalanceHours = settings.balance_hours + accruedHours - plannedHours;
+  return {
+    through: throughIso,
+    asOf: asOfIso,
+    startingBalanceHours: settings.balance_hours,
+    accrualCadence: settings.accrual_cadence,
+    accrualPeriods,
+    accruedHours,
+    plannedHours,
+    endingBalanceHours,
+    endingBalanceDays: settings.hours_per_day ? endingBalanceHours / settings.hours_per_day : null,
+  };
+}
+
+function status(db, dbPath, options = {}) {
+  const settings = getSettings(db);
+  const asOf = options.asOf ? isoDate(parseDate(options.asOf, "--as-of")) : settings.as_of_date;
+  const planned = plannedHoursThrough(db, "9999-12-31", asOf);
+  const upcoming = listPlans(db, { upcoming: true, asOf });
+  const yearEnd = `${asOf.slice(0, 4)}-12-31`;
+  return {
+    dbPath,
+    asOf,
+    settings,
+    currentBalanceHours: settings.balance_hours,
+    currentBalanceDays: settings.hours_per_day ? settings.balance_hours / settings.hours_per_day : null,
+    plannedPtoHours: planned,
+    plannedPtoDays: settings.hours_per_day ? planned / settings.hours_per_day : null,
+    upcomingPlans: upcoming.length,
+    forecast: forecast(db, yearEnd, { asOf }),
+  };
+}
+
+function calendarDryRun(db) {
+  return listPlans(db, { upcoming: true }).map((plan) => ({
+    action: "upsert",
+    provider: "apple-calendar",
+    externalId: plan.calendar_external_id || calendarExternalId(plan),
+    title: plan.title,
+    startDate: plan.start_date,
+    endDate: addDaysIso(plan.end_date, 1),
+    allDay: true,
+    notes: plan.notes,
+    sourcePlanId: plan.id,
+    status: plan.status,
+    type: plan.type,
+  }));
+}
+
+function dbStats(db, dbPath) {
+  const planCount = db.prepare("SELECT COUNT(*) AS count FROM ptoclaw_plans").get().count;
+  const syncCount = db.prepare("SELECT COUNT(*) AS count FROM ptoclaw_calendar_sync").get().count;
+  const settings = getSettings(db);
+  const stat = fs.statSync(dbPath);
+  return {
+    dbPath,
+    schemaVersion: db.prepare("SELECT value FROM ptoclaw_meta WHERE key = 'schema_version'").get()?.value || null,
+    planCount,
+    calendarSyncRows: syncCount,
+    sizeBytes: stat.size,
+    settingsUpdatedAt: settings.updated_at,
+  };
+}
+
+function print(value, globals) {
+  if (globals.json || value.json) {
+    const { json, ...payload } = value;
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  if (typeof value === "string") {
+    console.log(value);
+    return;
+  }
+  console.log(formatHuman(value));
+}
+
+function formatHuman(value) {
+  switch (value.kind) {
+    case "init":
+      return `Initialized ptoclaw database\nDB: ${value.dbPath}`;
+    case "settings":
+      return [
+        "Settings updated",
+        `As of: ${value.settings.as_of_date}`,
+        `Balance: ${fmtHours(value.settings.balance_hours)}`,
+        `Accrual: ${fmtHours(value.settings.accrual_hours)} ${value.settings.accrual_cadence}`,
+        `Hours/day: ${fmt(value.settings.hours_per_day)}`,
+      ].join("\n");
+    case "status":
+      return [
+        `DB: ${value.dbPath}`,
+        `As of: ${value.asOf}`,
+        `Balance: ${fmtHours(value.currentBalanceHours)} (${fmt(value.currentBalanceDays)} days)`,
+        `Planned PTO: ${fmtHours(value.plannedPtoHours)} (${fmt(value.plannedPtoDays)} days)`,
+        `Upcoming plans: ${value.upcomingPlans}`,
+        `Forecast through ${value.forecast.through}: ${fmtHours(value.forecast.endingBalanceHours)} (${fmt(value.forecast.endingBalanceDays)} days)`,
+      ].join("\n");
+    case "plan-add":
+      return [
+        value.dryRun ? "Plan add dry run" : `Added plan #${value.plan.id}`,
+        `${value.plan.title}: ${value.plan.start_date} to ${value.plan.end_date}`,
+        `Type/status: ${value.plan.type}/${value.plan.status}`,
+        `PTO impact: ${fmtHours(value.plan.total_hours)} (${value.plan.workday_count} weekdays)`,
+        `Calendar external ID: ${value.plan.calendar_external_id || value.plan.preview_calendar_external_id}`,
+      ].join("\n");
+    case "plan-list":
+      if (value.plans.length === 0) return "No plans found.";
+      return value.plans.map(formatPlanLine).join("\n");
+    case "plan-remove":
+      return `${value.dryRun ? "Would remove" : "Removed"} plan #${value.plan.id}: ${value.plan.title}`;
+    case "forecast":
+      return [
+        `Forecast from ${value.asOf} through ${value.through}`,
+        `Starting balance: ${fmtHours(value.startingBalanceHours)}`,
+        `Accrual: ${fmtHours(value.accruedHours)} across ${value.accrualPeriods} ${value.accrualCadence} periods`,
+        `Planned PTO: ${fmtHours(value.plannedHours)}`,
+        `Ending balance: ${fmtHours(value.endingBalanceHours)} (${fmt(value.endingBalanceDays)} days)`,
+      ].join("\n");
+    case "calendar":
+      if (value.events.length === 0) return "No upcoming plans to sync.";
+      return value.events.map((event) => {
+        return `Would ${event.action} ${event.externalId}: ${event.title} (${event.startDate} to ${event.endDate}, all-day)`;
+      }).join("\n");
+    case "db-stats":
+      return [
+        `DB: ${value.dbPath}`,
+        `Schema: ${value.schemaVersion}`,
+        `Plans: ${value.planCount}`,
+        `Calendar sync rows: ${value.calendarSyncRows}`,
+        `Size: ${value.sizeBytes} bytes`,
+      ].join("\n");
+    default:
+      return JSON.stringify(value, null, 2);
+  }
+}
+
+function formatPlanLine(plan) {
+  return `#${plan.id} ${plan.start_date}..${plan.end_date} ${plan.type}/${plan.status} ${plan.title} (${fmtHours(plan.total_hours)})`;
+}
+
+function fmtHours(value) {
+  return `${fmt(value)}h`;
+}
+
+function fmt(value) {
+  if (value === null || value === undefined) return "n/a";
+  return Number(value).toFixed(2).replace(/\.00$/, "");
+}
+
+async function main() {
+  const { globals, rest } = parseArgv(process.argv.slice(2));
+  if (globals.version) {
+    console.log(VERSION);
+    return;
+  }
+  if (globals.help || rest.length === 0) {
+    console.log(usage());
+    return;
+  }
+
+  const command = rest[0];
+  const usesSubcommand = new Set(["settings", "plan", "calendar", "db"]).has(command);
+  const subcommand = usesSubcommand ? rest[1] : undefined;
+  const commandArgs = usesSubcommand ? rest.slice(2) : rest.slice(1);
+  const { positionals, options } = parseOptions(commandArgs);
+  if (options.json) globals.json = true;
+  const { db, dbPath } = openDb(globals.db);
+
+  try {
+    if (command === "init") {
+      initSchema(db);
+      print({ kind: "init", ok: true, dbPath }, globals);
+      return;
+    }
+
+    requireSchema(db);
+
+    if (command === "status") {
+      print({ kind: "status", ...status(db, dbPath, options) }, globals);
+    } else if (command === "settings" && subcommand === "set") {
+      const settings = setSettings(db, options);
+      print({ kind: "settings", ok: true, settings }, globals);
+    } else if (command === "plan" && subcommand === "add") {
+      const draft = buildPlanDraft(getSettings(db), options);
+      const plan = options.dryRun
+        ? { id: null, ...draft, calendar_external_id: null, preview_calendar_external_id: calendarExternalId({ id: "pending", ...draft }) }
+        : insertPlan(db, draft);
+      print({ kind: "plan-add", dryRun: Boolean(options.dryRun), plan }, globals);
+    } else if (command === "plan" && subcommand === "list") {
+      print({ kind: "plan-list", upcoming: Boolean(options.upcoming), plans: listPlans(db, options) }, globals);
+    } else if (command === "plan" && subcommand === "remove") {
+      const id = Number(positionals[0]);
+      if (!Number.isInteger(id) || id <= 0) throw new CliError("plan remove requires a numeric <id>");
+      const plan = removePlan(db, id, options);
+      print({ kind: "plan-remove", dryRun: Boolean(options.dryRun), plan }, globals);
+    } else if (command === "forecast") {
+      if (!options.through) throw new CliError("forecast requires --through YYYY-MM-DD");
+      print({ kind: "forecast", ...forecast(db, options.through, options) }, globals);
+    } else if (command === "calendar" && subcommand === "sync") {
+      if (!options.dryRun) {
+        throw new CliError("calendar sync is currently dry-run only. Re-run with --dry-run.");
+      }
+      print({ kind: "calendar", dryRun: true, events: calendarDryRun(db) }, globals);
+    } else if (command === "db" && subcommand === "stats") {
+      print({ kind: "db-stats", ...dbStats(db, dbPath) }, globals);
+    } else {
+      throw new CliError(`Unknown command: ${rest.join(" ")}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+main().catch((error) => {
+  const code = error instanceof CliError ? error.code : 1;
+  const payload = { ok: false, error: error.message };
+  if (process.argv.includes("--json")) {
+    console.error(JSON.stringify(payload, null, 2));
+  } else {
+    console.error(`ptoclaw: ${error.message}`);
+  }
+  process.exit(code);
+});

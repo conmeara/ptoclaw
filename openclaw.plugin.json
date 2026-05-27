@@ -1,0 +1,35 @@
+{
+  "id": "ptoclaw",
+  "version": "0.1.0",
+  "name": "PTOClaw",
+  "description": "Local-first PTO planning CLI with SQLite-backed plans, forecasts, and safe calendar sync previews.",
+  "kind": "tooling",
+  "activation": {
+    "onStartup": false
+  },
+  "contracts": {
+    "skills": [
+      "ptoclaw"
+    ],
+    "commands": [
+      "ptoclaw"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "dbPath": {
+        "type": "string",
+        "description": "Optional SQLite database path. Overrides the default user-local ptoclaw database."
+      },
+      "storageMode": {
+        "type": "string",
+        "enum": [
+          "plugin-sqlite",
+          "external-sqlite"
+        ],
+        "description": "Where PTO state is stored. External SQLite can point at a compatible OpenClaw personal-data database."
+      }
+    }
+  }
+}

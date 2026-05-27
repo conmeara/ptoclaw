@@ -1,0 +1,41 @@
+{
+  "name": "ptoclaw",
+  "version": "0.1.0",
+  "description": "Plan PTO from a local SQLite database with a safe CLI and calendar sync previews.",
+  "author": {
+    "name": "PTOClaw contributors"
+  },
+  "homepage": "https://github.com/conmeara/ptoclaw",
+  "repository": "https://github.com/conmeara/ptoclaw",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "pto",
+    "vacation",
+    "calendar",
+    "sqlite"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "PTOClaw",
+    "shortDescription": "Local-first PTO planning from SQLite.",
+    "longDescription": "PTOClaw is a small OpenClaw plugin and CLI for storing PTO settings and plans in local SQLite, forecasting balances, and previewing calendar sync events with stable external IDs.",
+    "developerName": "PTOClaw contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Local",
+      "Calendar"
+    ],
+    "websiteURL": "https://github.com/conmeara/ptoclaw",
+    "privacyPolicyURL": "https://github.com/conmeara/ptoclaw",
+    "termsOfServiceURL": "https://github.com/conmeara/ptoclaw",
+    "defaultPrompt": [
+      "Show my PTO status.",
+      "Add a planned vacation to PTOClaw.",
+      "Preview calendar events for my PTO plan."
+    ],
+    "brandColor": "#2F6F58"
+  }
+}
