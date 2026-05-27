@@ -2,7 +2,7 @@
   "id": "ptoclaw",
   "version": "0.1.0",
   "name": "PTOClaw",
-  "description": "Local-first PTO planning CLI with SQLite-backed plans, forecasts, and safe calendar sync previews.",
+  "description": "Local-first PTO planning CLI with SQLite-backed plans, forecasts, chat-friendly monthly summaries, and safe calendar sync previews.",
   "kind": "tooling",
   "activation": {
     "onStartup": false

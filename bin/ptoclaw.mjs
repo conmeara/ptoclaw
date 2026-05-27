@@ -46,6 +46,7 @@ Commands:
   plan list [--upcoming] [--json]
   plan remove <id> [--force|--dry-run]
   forecast --through YYYY-MM-DD [--as-of YYYY-MM-DD]
+  summary months [--year YYYY] [--as-of YYYY-MM-DD] [--json]
   calendar sync --dry-run [--json]
   db stats
 
@@ -739,6 +740,178 @@ function forecast(db, throughValue, options = {}) {
   };
 }
 
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function parseYear(value, label = "--year") {
+  if (!/^\d{4}$/.test(value || "")) throw new CliError(`${label} must use YYYY`);
+  const year = Number(value);
+  if (year < 1900 || year > 9999) throw new CliError(`${label} must be between 1900 and 9999`);
+  return year;
+}
+
+function monthStartIso(year, monthIndex) {
+  return isoDate(new Date(Date.UTC(year, monthIndex, 1)));
+}
+
+function monthEndIso(year, monthIndex) {
+  return isoDate(new Date(Date.UTC(year, monthIndex + 1, 0)));
+}
+
+function maxIsoDate(left, right) {
+  return left > right ? left : right;
+}
+
+function projectionThrough(db, throughIso, settings, asOfIso) {
+  if (throughIso <= asOfIso) {
+    return {
+      accrualPeriods: 0,
+      accruedHours: 0,
+      plannedHours: 0,
+      balanceHours: settings.balance_hours,
+      balanceDays: settings.hours_per_day ? settings.balance_hours / settings.hours_per_day : null,
+    };
+  }
+  const accrualPeriods = accrualPeriodsBetween(
+    settings.accrual_cadence,
+    parseDate(asOfIso, "--as-of"),
+    parseDate(throughIso, "month end"),
+  );
+  const accruedHours = accrualPeriods * settings.accrual_hours;
+  const plannedHours = plannedHoursThrough(db, throughIso, asOfIso);
+  const balanceHours = settings.balance_hours + accruedHours - plannedHours;
+  return {
+    accrualPeriods,
+    accruedHours,
+    plannedHours,
+    balanceHours,
+    balanceDays: settings.hours_per_day ? balanceHours / settings.hours_per_day : null,
+  };
+}
+
+function plannedHoursInRange(db, startIso, endIso) {
+  if (endIso < startIso) return 0;
+  const rows = db.prepare(`
+    SELECT start_date, end_date, hours_per_day
+    FROM ptoclaw_plans
+    WHERE status = 'planned'
+      AND type IN ('vacation', 'sick', 'personal')
+      AND start_date <= ?
+      AND end_date >= ?
+  `).all(endIso, startIso);
+  return rows.reduce((total, plan) => {
+    const overlapStart = maxIsoDate(plan.start_date, startIso);
+    const overlapEnd = plan.end_date < endIso ? plan.end_date : endIso;
+    return total + countWeekdays(parseDate(overlapStart, "plan start"), parseDate(overlapEnd, "plan end")) * plan.hours_per_day;
+  }, 0);
+}
+
+function nonPtoDaysInRange(db, startIso, endIso) {
+  if (endIso < startIso) return { nonPtoDays: 0, holidayCount: 0 };
+  const rows = db.prepare(`
+    SELECT start_date, end_date, type
+    FROM ptoclaw_plans
+    WHERE status = 'planned'
+      AND type NOT IN ('vacation', 'sick', 'personal')
+      AND start_date <= ?
+      AND end_date >= ?
+  `).all(endIso, startIso);
+  return rows.reduce((total, plan) => {
+    const overlapStart = maxIsoDate(plan.start_date, startIso);
+    const overlapEnd = plan.end_date < endIso ? plan.end_date : endIso;
+    total.nonPtoDays += countWeekdays(parseDate(overlapStart, "plan start"), parseDate(overlapEnd, "plan end"));
+    if (plan.type === "holiday") total.holidayCount += 1;
+    return total;
+  }, { nonPtoDays: 0, holidayCount: 0 });
+}
+
+function levelForDays(days) {
+  const safeDays = Number.isFinite(days) ? days : 0;
+  const filled = Math.max(0, Math.min(5, Math.ceil(safeDays / 3)));
+  const bar = `${"#".repeat(filled)}${".".repeat(5 - filled)}`;
+  if (safeDays <= 0) return { level: "empty", indicator: `🔴 [${bar}]` };
+  if (safeDays < 2) return { level: "low", indicator: `🔴 [${bar}]` };
+  if (safeDays < 5) return { level: "light", indicator: `🟠 [${bar}]` };
+  if (safeDays < 10) return { level: "steady", indicator: `🟡 [${bar}]` };
+  if (safeDays < 15) return { level: "strong", indicator: `🟢 [${bar}]` };
+  return { level: "full", indicator: `🟢 [${bar}]` };
+}
+
+function monthlySummary(db, options = {}) {
+  const settings = getSettings(db);
+  const asOf = options.asOf ? isoDate(parseDate(options.asOf, "--as-of")) : settings.as_of_date;
+  const year = options.year ? parseYear(options.year) : parseYear(asOf.slice(0, 4), "as-of year");
+  const months = [];
+
+  for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+    const start = monthStartIso(year, monthIndex);
+    const end = monthEndIso(year, monthIndex);
+    const startingProjection = start <= asOf
+      ? projectionThrough(db, asOf, settings, asOf)
+      : projectionThrough(db, addDaysIso(start, -1), settings, asOf);
+    const endingProjection = projectionThrough(db, end, settings, asOf);
+    const reportingStart = maxIsoDate(start, asOf);
+    const accruedHours = endingProjection.accruedHours - startingProjection.accruedHours;
+    const plannedPtoHours = plannedHoursInRange(db, reportingStart, end);
+    const nonPto = nonPtoDaysInRange(db, reportingStart, end);
+    const endingBalanceDays = settings.hours_per_day ? endingProjection.balanceHours / settings.hours_per_day : null;
+    const level = levelForDays(endingBalanceDays);
+    months.push({
+      month: MONTH_NAMES[monthIndex],
+      monthNumber: monthIndex + 1,
+      start,
+      end,
+      startingBalanceHours: startingProjection.balanceHours,
+      startingBalanceDays: settings.hours_per_day ? startingProjection.balanceHours / settings.hours_per_day : null,
+      endingBalanceHours: endingProjection.balanceHours,
+      endingBalanceDays,
+      accruedHours,
+      plannedPtoHours,
+      plannedPtoDays: settings.hours_per_day ? plannedPtoHours / settings.hours_per_day : null,
+      nonPtoDays: nonPto.nonPtoDays,
+      holidayCount: nonPto.holidayCount,
+      level: level.level,
+      indicator: level.indicator,
+    });
+  }
+
+  const totals = months.reduce((sum, month) => {
+    sum.accruedHours += month.accruedHours;
+    sum.plannedPtoHours += month.plannedPtoHours;
+    sum.nonPtoDays += month.nonPtoDays;
+    sum.holidayCount += month.holidayCount;
+    return sum;
+  }, { accruedHours: 0, plannedPtoHours: 0, nonPtoDays: 0, holidayCount: 0 });
+
+  return {
+    year,
+    asOf,
+    settings: {
+      accrualCadence: settings.accrual_cadence,
+      accrualHours: settings.accrual_hours,
+      hoursPerDay: settings.hours_per_day,
+    },
+    months,
+    totals: {
+      ...totals,
+      accruedDays: settings.hours_per_day ? totals.accruedHours / settings.hours_per_day : null,
+      plannedPtoDays: settings.hours_per_day ? totals.plannedPtoHours / settings.hours_per_day : null,
+    },
+  };
+}
+
 function status(db, dbPath, options = {}) {
   const settings = getSettings(db);
   const asOf = options.asOf ? isoDate(parseDate(options.asOf, "--as-of")) : settings.as_of_date;
@@ -857,6 +1030,8 @@ function formatHuman(value) {
         `Planned PTO: ${fmtHours(value.plannedHours)}`,
         `Ending balance: ${fmtHours(value.endingBalanceHours)} (${fmt(value.endingBalanceDays)} days)`,
       ].join("\n");
+    case "summary-months":
+      return formatMonthlySummary(value);
     case "calendar":
       if (value.events.length === 0) return "No upcoming plans to sync.";
       return value.events.map((event) => {
@@ -873,6 +1048,23 @@ function formatHuman(value) {
     default:
       return JSON.stringify(value, null, 2);
   }
+}
+
+function formatMonthlySummary(value) {
+  const lines = [
+    `PTO by month ${value.year} (as of ${value.asOf})`,
+  ];
+  for (const month of value.months) {
+    const parts = [
+      `${month.month.slice(0, 3)} ${month.indicator}`,
+      `${fmt(month.startingBalanceDays)}d -> ${fmt(month.endingBalanceDays)}d`,
+      `(+${fmt(month.accruedHours / value.settings.hoursPerDay)}d, -${fmt(month.plannedPtoDays)}d)`,
+    ];
+    if (month.nonPtoDays > 0) parts.push(`${fmt(month.nonPtoDays)} non-PTOd`);
+    lines.push(parts.join(" "));
+  }
+  lines.push(`Totals: +${fmt(value.totals.accruedDays)}d accrued, -${fmt(value.totals.plannedPtoDays)}d planned PTO, ${fmt(value.totals.nonPtoDays)} non-PTOd`);
+  return lines.join("\n");
 }
 
 function formatPlanLine(plan) {
@@ -900,7 +1092,7 @@ async function main() {
   }
 
   const command = rest[0];
-  const usesSubcommand = new Set(["settings", "plan", "calendar", "db"]).has(command);
+  const usesSubcommand = new Set(["settings", "plan", "summary", "calendar", "db"]).has(command);
   const subcommand = usesSubcommand ? rest[1] : undefined;
   const commandArgs = usesSubcommand ? rest.slice(2) : rest.slice(1);
   const { positionals, options } = parseOptions(commandArgs);
@@ -952,6 +1144,8 @@ async function main() {
     } else if (command === "forecast") {
       if (!options.through) throw new CliError("forecast requires --through YYYY-MM-DD");
       print({ kind: "forecast", ...forecast(db, options.through, options) }, globals);
+    } else if (command === "summary" && subcommand === "months") {
+      print({ kind: "summary-months", ...monthlySummary(db, options) }, globals);
     } else if (command === "calendar" && subcommand === "sync") {
       if (!options.dryRun) {
         throw new CliError("calendar sync is currently dry-run only. Re-run with --dry-run.");

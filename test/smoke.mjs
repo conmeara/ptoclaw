@@ -65,6 +65,10 @@ run([
 ]);
 JSON.parse(run(["--json", "status", "--as-of", "2026-01-01"]));
 run(["forecast", "--through", "2026-12-31", "--as-of", "2026-01-01"]);
+const summary = JSON.parse(run(["--json", "summary", "months", "--year", "2026", "--as-of", "2026-01-01"]));
+if (summary.months.length !== 12 || !summary.months[0]?.indicator) {
+  throw new Error("monthly summary did not emit twelve indicated months");
+}
 const calendar = JSON.parse(run(["--json", "calendar", "sync", "--dry-run"]));
 if (!calendar.events[0]?.externalId?.startsWith("ptoclaw:")) {
   throw new Error("calendar dry-run did not emit a stable ptoclaw external ID");

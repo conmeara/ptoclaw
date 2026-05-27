@@ -33,6 +33,7 @@
     "termsOfServiceURL": "https://github.com/conmeara/ptoclaw/blob/main/docs/terms.md",
     "defaultPrompt": [
       "Show my PTO status.",
+      "Show my PTO by month.",
       "Add a planned vacation to PTOClaw.",
       "Preview calendar events for my PTO plan."
     ],

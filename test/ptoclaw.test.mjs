@@ -82,6 +82,7 @@ test("prints help and version", async () => {
   const help = await run(["--help"]);
   assert.match(help.stdout, /Usage:/);
   assert.match(help.stdout, /onboard/);
+  assert.match(help.stdout, /summary months/);
   assert.match(help.stdout, /calendar sync --dry-run/);
 
   const version = await run(["--version"]);
@@ -426,6 +427,62 @@ test("forecast only counts planned PTO inside the forecast window", async () => 
   ]);
   assert.equal(forecast.plannedHours, 16);
   assert.equal(forecast.endingBalanceHours, 64);
+});
+
+test("monthly summary emits chat-friendly text and structured JSON", async () => {
+  const db = await seededDb();
+  await run([
+    "--db",
+    db,
+    "plan",
+    "add",
+    "--start",
+    "2026-03-02",
+    "--end",
+    "2026-03-06",
+    "--type",
+    "vacation",
+    "--status",
+    "planned",
+    "--title",
+    "Spring break",
+  ]);
+  await run([
+    "--db",
+    db,
+    "plan",
+    "add",
+    "--start",
+    "2026-11-25",
+    "--end",
+    "2026-11-27",
+    "--type",
+    "holiday",
+    "--status",
+    "planned",
+    "--title",
+    "Office closed",
+  ]);
+
+  const human = await run(["--db", db, "summary", "months", "--year", "2026", "--as-of", "2026-01-01"]);
+  assert.match(human.stdout, /PTO by month 2026 \(as of 2026-01-01\)/);
+  assert.match(human.stdout, /Mar .+ 11d -> 7d \(\+1d, -5d\)/);
+  assert.match(human.stdout, /Nov .+ 14d -> 15d \(\+1d, -0d\) 3 non-PTOd/);
+
+  const summary = await json(["--db", db, "summary", "months", "--year", "2026", "--as-of", "2026-01-01"]);
+  assert.equal(summary.year, 2026);
+  assert.equal(summary.months.length, 12);
+  assert.equal(summary.months[2].month, "March");
+  assert.equal(summary.months[2].startingBalanceHours, 88);
+  assert.equal(summary.months[2].endingBalanceHours, 56);
+  assert.equal(summary.months[2].accruedHours, 8);
+  assert.equal(summary.months[2].plannedPtoHours, 40);
+  assert.equal(summary.months[2].plannedPtoDays, 5);
+  assert.equal(summary.months[10].nonPtoDays, 3);
+  assert.equal(summary.months[10].holidayCount, 1);
+  assert.match(summary.months[10].indicator, /^\p{Emoji}/u);
+  assert.equal(summary.totals.plannedPtoHours, 40);
+  assert.equal(summary.totals.nonPtoDays, 3);
 });
 
 test("status and plan list produce JSON", async () => {

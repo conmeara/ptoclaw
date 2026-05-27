@@ -60,6 +60,7 @@ ptoclaw onboard
 ptoclaw settings set --balance-hours 80 --accrual-hours 8 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01
 ptoclaw status
 ptoclaw plan add --start 2026-07-06 --end 2026-07-10 --type vacation --status planned --title "Summer break"
+ptoclaw summary months --year 2026 --as-of 2026-01-01
 ptoclaw forecast --through 2026-12-31 --as-of 2026-01-01
 ptoclaw calendar sync --dry-run --json
 ```
@@ -71,10 +72,13 @@ ptoclaw --db /path/to/personal-data.sqlite onboard --balance-days 10 --accrual-d
 ptoclaw onboard --balance-days 10 --accrual-days 1 --accrual-cadence monthly --hours-per-day 8 --as-of 2026-01-01 --pto-calendar "Calendar" --pto-event-pattern "PTO|OOO|Vacation" --holiday-calendar "US Holidays" --holiday-event-pattern "Holiday|Office closed" --no-input
 ptoclaw plan list --upcoming
 ptoclaw plan add --start 2026-11-25 --end 2026-11-27 --type holiday --status planned --title "Office closed" --dry-run
+ptoclaw --json summary months --year 2026 --as-of 2026-01-01
 ptoclaw plan remove 1 --dry-run
 ptoclaw plan remove 1 --force
 ptoclaw db stats
 ```
+
+For chat replies, `ptoclaw summary months` produces a compact month-by-month PTO balance view with emoji level indicators and no markdown table. Use `--json` for automation that needs the same monthly snapshots as structured data.
 
 ## Safety
 
@@ -105,6 +109,7 @@ Privacy and usage terms are intentionally short because PTOClaw is local-first:
 
 - Weekends are excluded from PTO hour counts; custom holidays and work schedules are not modeled yet.
 - Accrual forecasting is deterministic and local. It uses the configured balance as of `settings.as_of_date` or the command's `--as-of` override.
+- Monthly summaries read only the PTOClaw database. They count planned `holiday` entries as non-PTO days but do not inspect external calendars.
 - Calendar sync only previews events. The stable `externalId` field is reserved for a future Apple Calendar adapter.
 
 ## Development
