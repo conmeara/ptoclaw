@@ -13,6 +13,8 @@ Use this skill when the user asks to manage PTO from the local PTOClaw plugin, i
 - Keep SQLite as the source of truth. Do not hardcode private paths, account names, calendars, emails, or personal data.
 - Use `--db PATH` during onboarding when the user wants an external or shared SQLite database. Successful onboarding saves that path in the PTOClaw config for future commands.
 - Database resolution is explicit `--db`, then `PTOCLAW_DB`, then saved config `dbPath`, then the CLI default user-local path.
+- Before first-time onboarding, inspect the user's calendar for existing PTO/day-off signals so setup starts from observed data instead of only asking questions. Look for explicit PTO/OOO/vacation/off-work titles and obvious trip names the user calls out.
+- During onboarding, ask how holidays should be sourced: a user-provided holiday list, an existing holiday/calendar feed, or an employer schedule lookup. If the user provides an employer, try to find an official current-year schedule; if only unofficial sources are available, say so and mark imported holidays as unverified.
 - Prefer human-readable output for direct user answers. Use `--json` when another tool or automation will consume the result.
 - Treat calendar sync as an external side effect. `calendar sync` is dry-run only in this release and must be run with `--dry-run`.
 
